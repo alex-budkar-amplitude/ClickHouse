@@ -2,7 +2,11 @@
 /// BOOST_USE_ASAN, BOOST_USE_MSAN, BOOST_USE_TSAN and BOOST_USE_UCONTEXT are defined via CMake for sanitizer builds.
 #include <base/defines.h>
 #include <boost/context/fiber.hpp>
-#include <map>
+
+#include <cassert>
+
+#include <Common/FiberLocal.h>
+#include <Common/SilkTLSCheck.h>
 
 /// Class wrapper for boost::context::fiber.
 /// It tracks current executing coroutine for thread and
@@ -13,12 +17,14 @@ class StackfulCoroutine
 private:
     using Impl = boost::context::fiber;
     using CoroutinePtr = StackfulCoroutine *;
-    template <typename T> friend class CoroutineLocal;
 
 public:
     template <typename StackAlloc, typename Fn>
-    StackfulCoroutine(StackAlloc && salloc, Fn && fn) : impl(std::allocator_arg_t(), std::forward<StackAlloc>(salloc), RoutineImpl<Fn>(std::forward<Fn>(fn)))
+    StackfulCoroutine(StackAlloc && salloc, Fn && fn)
+        : impl(std::allocator_arg_t(), std::forward<StackAlloc>(salloc), RoutineImpl<Fn>(std::forward<Fn>(fn)))
+        , coroutine_locals(FiberLocalStorage::create())
     {
+        assert(!Silk::inside_silk_fiber);
     }
 
     StackfulCoroutine() = default;
@@ -40,7 +46,9 @@ public:
         CoroutinePtr & current_coroutine = getCurrentCoroutine();
         CoroutinePtr parent_coroutine = current_coroutine;
         current_coroutine = this;
+        FiberLocalStorage::swap(*coroutine_locals);
         impl = std::move(impl).resume();
+        FiberLocalStorage::swap(*coroutine_locals);
         /// Restore parent coroutine.
         current_coroutine = parent_coroutine;
     }
@@ -79,69 +87,11 @@ private:
         Fn fn;
     };
 
-    /// Special wrapper to store data in uniquer_ptr.
-    struct DataWrapper
-    {
-        virtual ~DataWrapper() = default;
-    };
-
-    using DataPtr = std::unique_ptr<DataWrapper>;
-
-    /// Get reference to coroutine-specific data by key
-    /// (the pointer to the structure that uses this data).
-    DataPtr & getLocalData(void * key)
-    {
-        return local_data[key];
-    }
-
     Impl && release()
     {
         return std::move(impl);
     }
 
     Impl impl;
-    std::map<void *, DataPtr> local_data;
-};
-
-/// Implementation for coroutine local variable.
-/// If we are in coroutine, it returns coroutine local data,
-/// otherwise it returns it's single field.
-/// Coroutine local data is destroyed in StackfulCoroutine destructor.
-/// Implementation is similar to boost::fiber::fiber_specific_ptr
-/// (we cannot use it because we don't use boost::fiber API.
-template <typename T>
-class CoroutineLocal
-{
-public:
-    T & operator*()
-    {
-        return get();
-    }
-
-    T * operator->()
-    {
-        return &get();
-    }
-
-private:
-    struct DataWrapperImpl : public StackfulCoroutine::DataWrapper
-    {
-        T impl;
-    };
-
-    T & get()
-    {
-        StackfulCoroutine * current_coroutine = StackfulCoroutine::getCurrentCoroutine();
-        if (!current_coroutine)
-            return main_instance;
-
-        StackfulCoroutine::DataPtr & ptr = current_coroutine->getLocalData(this);
-        /// Initialize instance on first request.
-        if (!ptr)
-            ptr = std::make_unique<DataWrapperImpl>();
-
-        return dynamic_cast<DataWrapperImpl *>(ptr.get())->impl;
-    }
-
-    T main_instance;
+    FiberLocalStorage::Holder coroutine_locals;
 };

@@ -123,6 +123,13 @@ add_library(global-libs INTERFACE)
 include (cmake/sanitize.cmake)
 include (cmake/profile_optimization.cmake)
 
+set (SILK_TLS_CHECK_PASS_PLUGIN "" CACHE FILEPATH "Path to a prebuilt silk-tls-check pass plugin, see utils/silk-tls-check/build.sh")
+if (SILK_TLS_CHECK_PASS_PLUGIN)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fpass-plugin=${SILK_TLS_CHECK_PASS_PLUGIN}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpass-plugin=${SILK_TLS_CHECK_PASS_PLUGIN}")
+    add_compile_definitions (SILK_TLS_CHECK=1)
+endif ()
+
 option(ENABLE_COLORED_BUILD "Enable colors in compiler output" ON)
 
 set (CMAKE_COLOR_MAKEFILE ${ENABLE_COLORED_BUILD}) # works only for the makefile generator

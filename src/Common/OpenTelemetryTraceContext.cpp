@@ -11,7 +11,7 @@
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
-#include <Common/AsyncTaskExecutor.h>
+#include <Common/FiberLocal.h>
 #include <Interpreters/Context.h>
 
 namespace DB
@@ -50,7 +50,7 @@ namespace OpenTelemetry
 {
 
 /// This code can be executed inside coroutines, we should use coroutine local tracing context.
-thread_local static CoroutineLocal<TracingContextOnThread> current_trace_context;
+static constinit FiberLocal<TracingContextOnThread, FiberLocalSlot::TraceContext> current_trace_context;
 
 bool Span::addAttribute(std::string_view name, UInt64 value) noexcept
 {

@@ -2,8 +2,9 @@
 
 #if USE_SILK
 
-#include <Common/CurrentThread.h>
 #include <Common/Exception.h>
+#include <Common/FiberLocal.h>
+#include <Common/SilkTLSCheck.h>
 
 #include <silk/fibers/fiber.h>
 #include <silk/fibers/future.h>
@@ -28,7 +29,7 @@ std::atomic<bool> fiber_scheduler_initialized = false;
 
 struct FiberContext
 {
-    DB::ThreadStatus * saved_current_thread;
+    FiberLocalStorage::Holder fiber_local_storage;
     std::function<int()> task;
 
     static int main(FiberContext * self) noexcept
@@ -45,10 +46,18 @@ struct FiberContext
     }
 };
 
-void onFiberResumeSuspend(silk::Fiber * fiber) noexcept
+void onFiberResume(silk::Fiber * fiber) noexcept
 {
     auto * context = static_cast<FiberContext *>(silk::FiberScheduler::getFiberParameters(fiber));
-    std::swap(context->saved_current_thread, DB::current_thread);
+    FiberLocalStorage::swap(*context->fiber_local_storage);
+    inside_silk_fiber = true;
+}
+
+void onFiberSuspend(silk::Fiber * fiber) noexcept
+{
+    inside_silk_fiber = false;
+    auto * context = static_cast<FiberContext *>(silk::FiberScheduler::getFiberParameters(fiber));
+    FiberLocalStorage::swap(*context->fiber_local_storage);
 }
 
 }
@@ -60,8 +69,8 @@ void initializeFiberScheduler(uint32_t fiber_stack_size)
     const silk::FiberScheduler::Options options =
     {
         .fiberStackSize = fiber_stack_size,
-        .fiberSuspend = &onFiberResumeSuspend,
-        .fiberResume = &onFiberResumeSuspend,
+        .fiberSuspend = &onFiberSuspend,
+        .fiberResume = &onFiberResume,
     };
     silk::FiberScheduler::initialize(&options);
 
@@ -114,7 +123,7 @@ int spawn(std::function<int()> task, silk::FiberFuture & future)
 {
     return silk::FiberScheduler::run(
         &FiberContext::main,
-        FiberContext{ .saved_current_thread = nullptr, .task = std::move(task) },
+        FiberContext{ .fiber_local_storage = FiberLocalStorage::create(), .task = std::move(task) },
         &future);
 }
 
