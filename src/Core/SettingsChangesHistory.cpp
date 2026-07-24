@@ -43,6 +43,8 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
         {
             {"unique_key_probe_implementation", "auto", "auto", "New setting: selects the UNIQUE KEY probe implementation (currently only the simple baseline exists)"},
             {"allow_lossy_numeric_supertype", false, false, "New setting that lets if/multiIf/coalesce/ifNull/array/map resolve all-numeric branches with no lossless common type (e.g. Decimal + Float64) to a numeric supertype (Float64, with possible precision loss), so the result can be aggregated. Independent of use_variant_as_common_type: with it off such branches previously raised NO_COMMON_TYPE, with it on they became a Variant; either way they now resolve to Float64."},
+            {"ai_function_text_default_credentials", "", "", "New setting"},
+            {"ai_function_embedding_default_credentials", "", "", "New setting"},
             {"join_runtime_filter_min_probe_rows", 0, 1000, "New setting to control minimum probe side size for installing JOIN runtime filters. It wasn't limited before, so previous value is 0 meaning always install."},
         });
         addSettingsChanges(settings_changes_history, "26.7",
@@ -54,8 +56,6 @@ const VersionToSettingsChangesMap & getSettingsChangesHistory()
             {"merge_tree_generic_exclusion_search_max_steps", 0, 0, "New setting to limit the number of steps of the generic exclusion search over the primary key index."},
             {"use_streaming_marks_compression", false, false, "New setting to compress marks into in-memory representation one block at a time (streaming) instead of materializing the full plain marks array, reducing peak memory during marks loading for compact parts with many substreams."},
             {"s3_validate_etag_on_read", false, true, "New setting to detect concurrent in-place overwrites of S3/GCS objects during a read by validating the GET response ETag against the listed one. previous_value=false so `compatibility` with versions before 26.7 restores the pre-existing behavior (no validation)."},
-            {"ai_function_text_default_credentials", "", "", "New setting"},
-            {"ai_function_embedding_default_credentials", "", "", "New setting"},
             {"ai_function_allow_insecure_endpoint", true, false, "AI functions now reject insecure (http) endpoints to remote hosts by default."},
             {"ai_function_max_api_calls_per_query", 0, 1000, "Bound outbound AI function HTTP calls per query by default (previously 0 - unlimited)."},
             {"dead_blobs_to_delay_insert", 0, 0, "New setting to override the `MergeTree` setting with the same name per query."},
