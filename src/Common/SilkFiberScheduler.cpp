@@ -2,8 +2,10 @@
 
 #if USE_SILK
 
+#include <Common/CurrentMemoryTracker.h>
 #include <Common/Exception.h>
 #include <Common/FiberLocal.h>
+#include <Common/MemoryTrackerSwitcher.h>
 #include <Common/SilkTLSCheck.h>
 
 #include <silk/fibers/fiber.h>
@@ -61,6 +63,20 @@ void onFiberSuspend(silk::Fiber * fiber) noexcept
     FiberLocalStorage::swap(*context->fiber_local_storage);
 }
 
+void onMemoryMapped(void * ptr, size_t size) noexcept
+{
+    DB::MemoryTrackerSwitcher switcher{&total_memory_tracker};
+    auto trace = CurrentMemoryTracker::allocNoThrow(static_cast<Int64>(size));
+    trace.onAlloc(ptr, size);
+}
+
+void onMemoryUnmapped(void * ptr, size_t size) noexcept
+{
+    DB::MemoryTrackerSwitcher switcher{&total_memory_tracker};
+    auto trace = CurrentMemoryTracker::free(static_cast<Int64>(size));
+    trace.onFree(ptr, size);
+}
+
 }
 
 void initializeFiberScheduler(uint32_t fiber_stack_size)
@@ -72,6 +88,8 @@ void initializeFiberScheduler(uint32_t fiber_stack_size)
         .fiberStackSize = fiber_stack_size,
         .fiberSuspend = &onFiberSuspend,
         .fiberResume = &onFiberResume,
+        .accountMemoryMapped = &onMemoryMapped,
+        .accountMemoryUnmapped = &onMemoryUnmapped,
     };
     silk::FiberScheduler::initialize(&options);
 
