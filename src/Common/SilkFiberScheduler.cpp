@@ -32,6 +32,7 @@ struct FiberContext
     FiberLocalStorage::Holder fiber_local_storage;
     std::function<int()> task;
 
+    SILK_FIBER_ENTRYPOINT
     static int main(FiberContext * self) noexcept
     {
         try

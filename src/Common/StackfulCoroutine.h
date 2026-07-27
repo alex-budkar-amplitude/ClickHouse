@@ -3,10 +3,14 @@
 #include <base/defines.h>
 #include <boost/context/fiber.hpp>
 
-#include <cassert>
-
+#include <Common/Exception.h>
 #include <Common/FiberLocal.h>
 #include <Common/SilkTLSCheck.h>
+
+namespace DB::ErrorCodes
+{
+    extern const int LOGICAL_ERROR;
+}
 
 /// Class wrapper for boost::context::fiber.
 /// It tracks current executing coroutine for thread and
@@ -24,7 +28,8 @@ public:
         : impl(std::allocator_arg_t(), std::forward<StackAlloc>(salloc), RoutineImpl<Fn>(std::forward<Fn>(fn)))
         , coroutine_locals(FiberLocalStorage::create())
     {
-        assert(!Silk::inside_silk_fiber);
+        if (Silk::inside_silk_fiber)
+            throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Stackful coroutines cannot be created inside silk fibers");
     }
 
     StackfulCoroutine() = default;

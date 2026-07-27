@@ -13,6 +13,9 @@ enum class FiberLocalSlot : size_t
 {
     CurrentThread,
     TraceContext,
+#if defined(SILK_TLS_CHECK)
+    ThreadLocalStorageCheckFirstSeen,
+#endif
     Count,
 };
 
@@ -65,26 +68,28 @@ public:
     template <typename T, FiberLocalSlot slot>
     static T load() noexcept
     {
+        void * word = load<static_cast<size_t>(slot)>();
         T value;
-        std::memcpy(&value, &thread_storage.slots[static_cast<size_t>(slot)], sizeof(T));
+        std::memcpy(&value, &word, sizeof(T));
         return value;
     }
 
     template <typename T, FiberLocalSlot slot>
     static void store(T value) noexcept
     {
-        std::memcpy(&thread_storage.slots[static_cast<size_t>(slot)], &value, sizeof(T));
+        void * word = nullptr;
+        std::memcpy(&word, &value, sizeof(T));
+        store<static_cast<size_t>(slot)>(word);
     }
 
     template <typename T, FiberLocalSlot slot>
     static T & heapObject()
     {
-        void * & word = thread_storage.slots[static_cast<size_t>(slot)];
-        auto * object = static_cast<T *>(word);
+        auto * object = static_cast<T *>(load<static_cast<size_t>(slot)>());
         if (!object)
         {
             object = new T();
-            word = static_cast<void *>(object);
+            store<static_cast<size_t>(slot)>(object);
             registerDestructor(slot, [](void * raw) { delete static_cast<T *>(raw); });
             armThreadStorageCleaner();
         }
@@ -99,7 +104,65 @@ public:
     void destroySlots() noexcept;
 
 private:
+
+    /// A fiber may resume on another OS thread, but the compiler may hoist &slots[slot].
+
     static constexpr size_t slot_count = static_cast<size_t>(FiberLocalSlot::Count);
+
+    __attribute__((noinline)) static std::array<void *, slot_count> & currentSlots() noexcept
+    {
+        __asm__ __volatile__("" ::: "memory");
+        return thread_storage.slots;
+    }
+
+    template <size_t slot>
+    static void * load() noexcept
+    {
+        void * value = nullptr;
+#if defined(__x86_64__) && defined(__ELF__)
+        __asm__ __volatile__(
+            "movq %%fs:FiberLocalStorageThreadStorage@tpoff+%c1, %0"
+            : "=r"(value)
+            : "i"(slot * sizeof(void *))
+            : "memory");
+#elif defined(__aarch64__) && defined(__ELF__)
+        __asm__ __volatile__(
+            "mrs %0, tpidr_el0\n\t"
+            "add %0, %0, :tprel_hi12:FiberLocalStorageThreadStorage\n\t"
+            "add %0, %0, :tprel_lo12_nc:FiberLocalStorageThreadStorage\n\t"
+            "ldr %0, [%0, %c1]"
+            : "=&r"(value)
+            : "i"(slot * sizeof(void *))
+            : "memory");
+#else
+        value = currentSlots()[slot];
+#endif
+        return value;
+    }
+
+    template <size_t slot>
+    static void store(void * value) noexcept
+    {
+#if defined(__x86_64__) && defined(__ELF__)
+        __asm__ __volatile__(
+            "movq %1, %%fs:FiberLocalStorageThreadStorage@tpoff+%c0"
+            :
+            : "i"(slot * sizeof(void *)), "r"(value)
+            : "memory");
+#elif defined(__aarch64__) && defined(__ELF__)
+        void * address;
+        __asm__ __volatile__(
+            "mrs %0, tpidr_el0\n\t"
+            "add %0, %0, :tprel_hi12:FiberLocalStorageThreadStorage\n\t"
+            "add %0, %0, :tprel_lo12_nc:FiberLocalStorageThreadStorage\n\t"
+            "str %2, [%0, %c1]"
+            : "=&r"(address)
+            : "i"(slot * sizeof(void *)), "r"(value)
+            : "memory");
+#else
+        currentSlots()[slot] = value;
+#endif
+    }
 
     static void registerDestructor(FiberLocalSlot slot, void (* destroy)(void *)) noexcept;
     static void armThreadStorageCleaner() noexcept;
@@ -107,7 +170,7 @@ private:
     struct ThreadStorageCleaner;
 
     static inline constinit std::array<std::atomic<void (*)(void *)>, slot_count> slot_destructors{};
-    static thread_local constinit FiberLocalStorage thread_storage;
+    static thread_local constinit FiberLocalStorage thread_storage asm("FiberLocalStorageThreadStorage");
 
     std::array<void *, slot_count> slots{};
 };

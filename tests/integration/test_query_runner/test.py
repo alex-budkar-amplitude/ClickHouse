@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from helpers.cluster import ClickHouseCluster
@@ -24,12 +26,12 @@ def started_cluster():
         cluster.shutdown()
 
 
-def runner_ddl(columns, mode, location, scheduler="threads"):
+def runner_ddl(columns, mode, location, scheduler="threads", extra_settings=""):
     cluster_setting = ", cluster = 'qr_cluster', shard = '1'" if location == "cluster" else ""
     scheduler_setting = f", scheduler = '{scheduler}'" if scheduler != "threads" else ""
     return (
         f"CREATE OR REPLACE TABLE runner ({columns}) "
-        f"ENGINE = QueryRunner SETTINGS mode = '{mode}'{cluster_setting}{scheduler_setting}"
+        f"ENGINE = QueryRunner SETTINGS mode = '{mode}'{cluster_setting}{scheduler_setting}{extra_settings}"
     )
 
 
@@ -243,4 +245,34 @@ def test_wait_query_runner(location, node_target, scheduler):
     )
     node_query_runner.query("SYSTEM WAIT QUERY RUNNER runner")
     assert node_target.query("SELECT x FROM target ORDER BY x") == "1\n2\n3\n"
+    node_query_runner.query("DROP TABLE runner")
+
+
+@pytest.mark.parametrize(
+    "location, node_target, scheduler, extra_settings",
+    [
+        ("local", node_query_runner, "threads", ""),
+        ("cluster", node_cluster, "fibers", ", max_concurrent_remote_queries_per_replica = 32"),
+    ],
+    ids=["threads", "fibers"],
+)
+def test_many_concurrent_queries(location, node_target, scheduler, extra_settings):
+    node_target.query("CREATE OR REPLACE TABLE target (x UInt64) ENGINE = MergeTree ORDER BY tuple()")
+    node_query_runner.query(runner_ddl("query String", "asynchronous", location, scheduler, extra_settings))
+
+    def insert_batch(start):
+        node_query_runner.query(
+            "INSERT INTO runner SELECT "
+            "'INSERT INTO default.target VALUES (' || toString(number) || ')' "
+            f"FROM numbers({start}, 50)"
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(insert_batch, range(0, 200, 50)))
+
+    node_query_runner.query("SYSTEM WAIT QUERY RUNNER runner")
+    assert (
+        node_target.query("SELECT count(), uniqExact(x), min(x), max(x) FROM target")
+        == "200\t200\t0\t199\n"
+    )
     node_query_runner.query("DROP TABLE runner")
