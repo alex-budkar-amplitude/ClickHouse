@@ -3,21 +3,58 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <type_traits>
 
 #include <base/defines.h>
 
-enum class FiberLocalSlot : size_t
+#include <Common/VariableContext.h>
+
+namespace FiberLocalSlot
+{
+enum : size_t
 {
     CurrentThread,
     TraceContext,
-#if defined(SILK_TLS_CHECK)
-    ThreadLocalStorageCheckFirstSeen,
+    InsideSilkFiber,
+    LockMemoryExceptionCounter,
+    LockMemoryExceptionLevel,
+    LockMemoryExceptionBlockFaultInjections,
+    MemoryTrackerBlockerLevel,
+    MemoryTrackerUntrackedAllocationsBlockerCounter,
+#if !defined(NDEBUG)
+    MemoryTrackerAlwaysThrowOnAllocation,
+#endif
+#if defined(SILK_THREAD_LOCAL_STORAGE_SANITIZER)
+    ThreadLocalStorageSanitizerFirstSeen,
+    ThreadLocalStorageSanitizerInside,
 #endif
     Count,
 };
+}
+
+/// Support defaults while keeping FiberLocal zero-overhead on access and
+/// keeping FiberLocal and FiberLocalStorage constant-initialized.
+constexpr uintptr_t fiberLocalSlotDefault(size_t slot)
+{
+    switch (slot)
+    {
+        case FiberLocalSlot::MemoryTrackerBlockerLevel:
+            return static_cast<uintptr_t>(VariableContext::Max);
+        default:
+            return 0;
+    }
+}
+
+constexpr std::array<uintptr_t, FiberLocalSlot::Count> fiberLocalSlotDefaults()
+{
+    std::array<uintptr_t, FiberLocalSlot::Count> defaults{};
+    for (size_t slot = 0; slot < defaults.size(); ++slot)
+        defaults[slot] = fiberLocalSlotDefault(slot);
+    return defaults;
+}
 
 template <typename T>
 concept FiberLocalStoredInline
@@ -34,7 +71,7 @@ concept FiberLocalStoredInline
 ///     Non-FiberLocalStoredInline variables are allocated on the heap and destroyed
 ///     on execution context exit.
 ///
-/// (3) Trivially constructible and destructible, which avoids static initialization/destruction
+/// (3) Constant-initialized and trivially destructible, which avoids static initialization/destruction
 ///     order related complexity and provides identical semantics with plain TLS variables
 ///     for threads. So static objects' constructors and destructors may use FiberLocal
 ///     just like they would use normal thread_local variables.
@@ -65,31 +102,31 @@ public:
 
     static Holder create();
 
-    template <typename T, FiberLocalSlot slot>
+    template <typename T, size_t slot>
     static T load() noexcept
     {
-        void * word = load<static_cast<size_t>(slot)>();
+        uintptr_t word = load<slot>();
         T value;
         std::memcpy(&value, &word, sizeof(T));
         return value;
     }
 
-    template <typename T, FiberLocalSlot slot>
+    template <typename T, size_t slot>
     static void store(T value) noexcept
     {
-        void * word = nullptr;
+        uintptr_t word = 0;
         std::memcpy(&word, &value, sizeof(T));
-        store<static_cast<size_t>(slot)>(word);
+        store<slot>(word);
     }
 
-    template <typename T, FiberLocalSlot slot>
+    template <typename T, size_t slot>
     static T & heapObject()
     {
-        auto * object = static_cast<T *>(load<static_cast<size_t>(slot)>());
+        auto * object = reinterpret_cast<T *>(load<slot>());
         if (!object)
         {
             object = new T();
-            store<static_cast<size_t>(slot)>(object);
+            store<slot>(reinterpret_cast<uintptr_t>(object));
             registerDestructor(slot, [](void * raw) { delete static_cast<T *>(raw); });
             armThreadStorageCleaner();
         }
@@ -107,18 +144,19 @@ private:
 
     /// A fiber may resume on another OS thread, but the compiler may hoist &slots[slot].
 
-    static constexpr size_t slot_count = static_cast<size_t>(FiberLocalSlot::Count);
+    static constexpr size_t slot_count = FiberLocalSlot::Count;
 
-    __attribute__((noinline)) static std::array<void *, slot_count> & currentSlots() noexcept
+    __attribute__((noinline)) static std::array<uintptr_t, slot_count> & currentSlots() noexcept
     {
         __asm__ __volatile__("" ::: "memory");
         return thread_storage.slots;
     }
 
     template <size_t slot>
-    static void * load() noexcept
+    static uintptr_t load() noexcept
     {
-        void * value = nullptr;
+        static_assert(slot < slot_count);
+        uintptr_t value = 0;
 #if defined(__x86_64__) && defined(__ELF__)
         __asm__ __volatile__(
             "movq %%fs:FiberLocalStorageThreadStorage@tpoff+%c1, %0"
@@ -141,7 +179,7 @@ private:
     }
 
     template <size_t slot>
-    static void store(void * value) noexcept
+    static void store(uintptr_t value) noexcept
     {
 #if defined(__x86_64__) && defined(__ELF__)
         __asm__ __volatile__(
@@ -164,7 +202,7 @@ private:
 #endif
     }
 
-    static void registerDestructor(FiberLocalSlot slot, void (* destroy)(void *)) noexcept;
+    static void registerDestructor(size_t slot, void (* destroy)(void *)) noexcept;
     static void armThreadStorageCleaner() noexcept;
 
     struct ThreadStorageCleaner;
@@ -172,14 +210,16 @@ private:
     static inline constinit std::array<std::atomic<void (*)(void *)>, slot_count> slot_destructors{};
     static thread_local constinit FiberLocalStorage thread_storage asm("FiberLocalStorageThreadStorage");
 
-    std::array<void *, slot_count> slots{};
+    std::array<uintptr_t, slot_count> slots = fiberLocalSlotDefaults();
 };
 
-/// Fiber-aware thread_local variable.
+/// Fiber-aware thread_local variable. Zero overhead vs plain TLS on access.
 /// Works in plain threads, silk fibers, and stackful coroutines.
-template <typename T, FiberLocalSlot slot>
+template <typename T, size_t slot, auto default_value = uintptr_t{0}>
 class FiberLocal
 {
+    static_assert(static_cast<uintptr_t>(default_value) == fiberLocalSlotDefault(slot), "default_value must match fiberLocalSlotDefault");
+
 public:
     T get() const requires FiberLocalStoredInline<T> { return FiberLocalStorage::load<T, slot>(); }
     operator T() const requires FiberLocalStoredInline<T> { return get(); }

@@ -9,9 +9,9 @@ void FiberLocalStorage::destroySlots() noexcept
         void (* destroy)(void *) = slot_destructors[i].load(std::memory_order_relaxed);
         if (!destroy)
             continue;
-        if (void * object = slots[i])
+        if (void * object = reinterpret_cast<void *>(slots[i]))
         {
-            slots[i] = nullptr;
+            slots[i] = 0;
             destroy(object);
         }
     }
@@ -28,9 +28,9 @@ FiberLocalStorage::Holder FiberLocalStorage::create()
     return Holder(new FiberLocalStorage());
 }
 
-void FiberLocalStorage::registerDestructor(FiberLocalSlot slot, void (* destroy)(void *)) noexcept
+void FiberLocalStorage::registerDestructor(size_t slot, void (* destroy)(void *)) noexcept
 {
-    slot_destructors[static_cast<size_t>(slot)].store(destroy, std::memory_order_relaxed);
+    slot_destructors[slot].store(destroy, std::memory_order_relaxed);
 }
 
 struct FiberLocalStorage::ThreadStorageCleaner

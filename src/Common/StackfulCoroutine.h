@@ -5,7 +5,7 @@
 
 #include <Common/Exception.h>
 #include <Common/FiberLocal.h>
-#include <Common/SilkTLSCheck.h>
+#include <Common/SilkFiberScheduler.h>
 
 namespace DB::ErrorCodes
 {
@@ -28,7 +28,7 @@ public:
         : impl(std::allocator_arg_t(), std::forward<StackAlloc>(salloc), RoutineImpl<Fn>(std::forward<Fn>(fn)))
         , coroutine_locals(FiberLocalStorage::create())
     {
-        if (Silk::inside_silk_fiber)
+        if (Silk::isInsideFiber())
             throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Stackful coroutines cannot be created inside silk fibers");
     }
 

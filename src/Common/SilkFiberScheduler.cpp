@@ -6,7 +6,10 @@
 #include <Common/Exception.h>
 #include <Common/FiberLocal.h>
 #include <Common/MemoryTrackerSwitcher.h>
-#include <Common/SilkTLSCheck.h>
+
+#if defined(SILK_THREAD_LOCAL_STORAGE_SANITIZER)
+#    include <Common/SilkThreadLocalStorageSanitizer.h>
+#endif
 
 #include <silk/fibers/fiber.h>
 #include <silk/fibers/future.h>
@@ -29,14 +32,19 @@ namespace
 /// Therefore, release-acquire is required.
 std::atomic<bool> fiber_scheduler_initialized = false;
 
+constinit FiberLocal<bool, FiberLocalSlot::InsideSilkFiber> inside_silk_fiber;
+
 struct FiberContext
 {
     FiberLocalStorage::Holder fiber_local_storage;
     std::function<int()> task;
 
-    SILK_FIBER_ENTRYPOINT
     static int main(FiberContext * self) noexcept
     {
+#if defined(SILK_THREAD_LOCAL_STORAGE_SANITIZER)
+        silk_thread_local_storage_sanitizer_fiber_init_hook();
+#endif
+        inside_silk_fiber = true;
         try
         {
             return self->task();
@@ -53,12 +61,10 @@ void onFiberResume(silk::Fiber * fiber) noexcept
 {
     auto * context = static_cast<FiberContext *>(silk::FiberScheduler::getFiberParameters(fiber));
     FiberLocalStorage::swap(*context->fiber_local_storage);
-    inside_silk_fiber = true;
 }
 
 void onFiberSuspend(silk::Fiber * fiber) noexcept
 {
-    inside_silk_fiber = false;
     auto * context = static_cast<FiberContext *>(silk::FiberScheduler::getFiberParameters(fiber));
     FiberLocalStorage::swap(*context->fiber_local_storage);
 }
@@ -109,6 +115,11 @@ void destroyFiberScheduler()
 bool isFiberSchedulerInitialized()
 {
     return fiber_scheduler_initialized.load(std::memory_order_acquire);
+}
+
+bool isInsideFiber()
+{
+    return inside_silk_fiber.get();
 }
 
 RuntimeCounters getRuntimeCounters()

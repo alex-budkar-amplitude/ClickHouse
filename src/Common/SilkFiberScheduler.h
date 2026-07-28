@@ -27,6 +27,8 @@ void destroyFiberScheduler();
 
 bool isFiberSchedulerInitialized();
 
+bool isInsideFiber();
+
 using RuntimeCounters = std::vector<std::pair<std::string_view, uint64_t>>;
 
 RuntimeCounters getRuntimeCounters();
@@ -35,6 +37,18 @@ RuntimeCounters getRuntimeCounters();
 
 /// Runs the task to completion: blocks a plain thread, suspends cooperatively when called from a fiber.
 [[nodiscard]] int runBlocking(std::function<int()> task);
+
+}
+
+#else
+
+namespace Silk
+{
+
+inline bool isInsideFiber()
+{
+    return false;
+}
 
 }
 
