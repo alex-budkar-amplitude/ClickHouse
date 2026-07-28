@@ -643,13 +643,17 @@ namespace
         void performCopy()
         {
             LOG_TEST(log, "Copy object {} to {} using native copy", src_key, dest_key);
-            bool use_single_operation_copy = !supports_multipart_copy || !request_settings[S3RequestSetting::allow_multipart_copy]
-                || (size <= request_settings[S3RequestSetting::max_single_operation_copy_size]);
+            /// Server-side CopyObject copies the whole object; use it only for a full-object copy (offset==0).
+            const bool can_multipart_copy = supports_multipart_copy && request_settings[S3RequestSetting::allow_multipart_copy];
+            const bool use_single_operation_copy = offset == 0
+                && (!can_multipart_copy || size <= request_settings[S3RequestSetting::max_single_operation_copy_size]);
 
             if (use_single_operation_copy)
                 performSingleOperationCopy();
-            else
+            else if (can_multipart_copy)
                 performMultipartUploadCopy();
+            else
+                fallback_method();   /// ranged copy without multipart support -> read + write
 
             if (request_settings[S3RequestSetting::check_objects_after_upload])
                 checkObjectAfterUpload();
